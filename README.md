@@ -1,5 +1,7 @@
 # Coralline
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 **Generative coral patterns for lamps, drawn as one continuous line.**
 
 Coralline grows organic coral and brain-coral patterns with a *differential growth* simulation.
@@ -172,3 +174,14 @@ docs/images/    README images
 run_app.bat     double-click launcher (Windows)
 build_exe.bat   builds a standalone .exe with PyInstaller
 ```
+
+## License
+
+Copyright (C) 2026 Muhammad Wasiq
+
+Coralline is free software: you can redistribute it and/or modify it under the terms of the
+**GNU General Public License v3.0** (or, at your option, any later version). See [`LICENSE`](LICENSE).
+
+In short, you may use, study, share and modify it, including commercially. If you distribute it
+or a modified version, you must share the source code under the same license. **Patterns you
+generate with Coralline are yours.** The license covers the program, not what you make with it.
