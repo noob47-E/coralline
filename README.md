@@ -35,7 +35,7 @@ SVG, PDF, DXF or PNG in real millimetres.
 Requires **Python 3.9+**. Tested on Windows 10 with Python 3.12.
 
 ```bash
-git clone https://github.com/<your-username>/coralline.git
+git clone https://github.com/<noob47-E>/coralline.git
 cd coralline
 pip install -r requirements.txt
 python app.py
