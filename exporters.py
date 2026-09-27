@@ -14,6 +14,8 @@ from geometry import catmull_rom_beziers, prepare_output
 
 MM_TO_PT = 72.0 / 25.4
 FORMATS = ["svg", "pdf", "dxf", "png"]
+MAX_PNG_PIXELS = 150_000_000   # final PNG (about 12,000 x 12,000)
+MAX_WORK_PIXELS = 160_000_000  # supersampled drawing buffer (~480 MB)
 
 
 @dataclass
@@ -150,7 +152,12 @@ def export_dxf(P_mm: np.ndarray, path: str, s: ExportSettings):
 def render_image(P_mm: np.ndarray, s: ExportSettings, dpi: int | None = None) -> Image.Image:
     dpi = dpi or s.png_dpi
     Q, w, h = _layout(smooth_points(P_mm, s), s.margin_mm)
-    ss = 3  # supersampling for smooth edges
+    out_w, out_h = w * dpi / 25.4, h * dpi / 25.4
+    if out_w * out_h > MAX_PNG_PIXELS:
+        raise ValueError(f"A {w:.0f} x {h:.0f} mm PNG at {dpi} DPI would be {out_w:,.0f} x {out_h:,.0f} pixels, "
+                         f"which is too big. Choose a lower PNG DPI, or use SVG / PDF, which stay sharp at any size.")
+    # supersample for smooth edges, but less for big images so memory stays reasonable
+    ss = next(k for k in (3, 2, 1) if out_w * out_h * k * k <= MAX_WORK_PIXELS or k == 1)
     px = dpi / 25.4 * ss
     W, H = max(1, int(round(w * px))), max(1, int(round(h * px)))
     img = Image.new("RGB", (W, H), _hex_to_rgb(s.background))

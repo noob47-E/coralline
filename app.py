@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageTk
 
 from exporters import FORMATS, ExportSettings, export, smooth_points
 from geometry import closed_length, count_self_intersections
@@ -40,7 +41,7 @@ GROWTH_CONTROLS = [
         ("branchiness", "Branchiness", "scale", (0.0, 1.0, 0.05)),
         ("smoothness", "Smoothness", "scale", (0.0, 1.0, 0.05)),
         ("wiggle", "Wiggle / randomness", "scale", (0.0, 1.0, 0.05)),
-        ("max_iterations", "Max iterations", "scale", (500, 30000, 100)),
+        ("max_iterations", "Max iterations", "scale", (500, 60000, 500)),
     ]),
     ("Start & structure", [
         ("start_shape", "Start shape", "combo", START_SHAPES),
@@ -84,7 +85,8 @@ TIPS = {
     # --- size & shape
     "diameter_mm": _tip(
         "The overall width of the pattern in millimetres (the size of the outer shape).",
-        "Bigger pattern with more lines and more fingers. Takes longer to grow.",
+        "Bigger pattern with more lines and more fingers. Takes longer to grow "
+        "(roughly 5 s at 200 mm, 15 s at 350 mm, 1 min at 600 mm).",
         "Smaller pattern with fewer fingers. Grows faster.",
         "The finger width stays the same; that is set by Line spacing."),
     "spacing_mm": _tip(
@@ -322,6 +324,8 @@ class App(tk.Tk):
         self.result_mm: np.ndarray | None = None
         self.boundary_mm: np.ndarray | None = None
         self._redraw_job = None
+        self._poll_delay = 60
+        self._photo = None         # the preview image shown on the canvas
         self.tooltips: list[Tooltip] = []
         self._view = None          # (cx, cy, scale) of the last preview drawing
         self._trace = None         # state of the running line-test animation
@@ -608,13 +612,21 @@ class App(tk.Tk):
         self.thread.start()
 
     def _worker(self, sim: DifferentialGrowth, run_id: int, stop_event: threading.Event):
+        last = [0.0]
+
         def publish(s: DifferentialGrowth):
+            now = time.perf_counter()
+            if not s.done and now - last[0] < 0.08:  # the preview can't use more than ~12 updates/s
+                return
+            last[0] = now
             stats = {"iteration": s.iteration, "nodes": len(s.P), "progress": s.progress,
-                     "done": s.done, "reason": s.stop_reason}
+                     "done": s.done, "reason": s.stop_reason, "elapsed": now - t0}
             with self.lock:
-                self.snapshot = (run_id, s.points_mm().copy(), stats)
+                self.snapshot = (run_id, s.points_mm(), stats)
+
+        t0 = time.perf_counter()
         try:
-            sim.run(stop_event=stop_event, callback=publish, callback_every=4)
+            sim.run(stop_event=stop_event, callback=publish, callback_every=1)
         except Exception as exc:
             with self.lock:
                 self.snapshot = (run_id, sim.points_mm().copy(),
@@ -632,9 +644,13 @@ class App(tk.Tk):
                 self._finish(pts, st)
             else:
                 self.status.set(f"Growing... seed {self.seed_var.get()}  |  step {st['iteration']:,}  |  "
-                                f"{st['nodes']:,} points  |  {st['progress'] * 100:.0f}%")
+                                f"{st['nodes']:,} points  |  {st['progress'] * 100:.0f}%  |  "
+                                f"{st['elapsed']:.0f} s")
+                t = time.perf_counter()
                 self._draw(pts, final=False)
-        self.after(60, self._poll)
+                # never spend more than about a third of the time drawing
+                self._poll_delay = int(min(1000, max(60, 2000 * (time.perf_counter() - t))))
+        self.after(self._poll_delay, self._poll)
 
     def _finish(self, pts, st):
         self.result_mm = pts
@@ -658,7 +674,7 @@ class App(tk.Tk):
         elif self.drawn_snapshot is not None:
             self._draw(self.drawn_snapshot[1], final=False)
 
-    def _draw(self, pts_mm: np.ndarray, final: bool):
+    def _draw(self, pts_mm: np.ndarray, final: bool, faded: bool = False):
         self._cancel_trace()
         c = self.canvas
         c.delete("all")
@@ -671,24 +687,35 @@ class App(tk.Tk):
         cx, cy = W / 2, H / 2
         self._view = (cx, cy, s)
 
-        def coords(Q):
-            out = np.empty(2 * len(Q))
-            out[0::2] = cx + Q[:, 0] * s
-            out[1::2] = cy - Q[:, 1] * s
-            return out.tolist()
-
-        if self.show_boundary.get():
-            c.create_polygon(coords(B), outline="#b8c4e0", fill="", dash=(4, 4))
         if final:
             try:
                 pts_mm = smooth_points(pts_mm, self.export_settings())
             except Exception:
                 pass
-        xy = coords(pts_mm)
-        if self.preview_style.get() == "filled":
-            c.create_polygon(xy, fill="#f2c46d", outline="#3a2a10", width=1.5, tags="pattern")
+        # Drawn with Pillow into an image: Tk's own thick lines take seconds for big patterns.
+        ss = 2 if final else 1  # supersample the finished pattern for smooth edges
+        img = Image.new("RGB", (W * ss, H * ss), "white")
+        d = ImageDraw.Draw(img)
+
+        def px(Q):
+            return list(zip((cx + Q[:, 0] * s) * ss, (cy - Q[:, 1] * s) * ss))
+
+        if self.show_boundary.get():
+            bp = px(B)
+            for k in range(0, len(bp), 16):  # dashed outline
+                d.line(bp[k:k + 9], fill=(184, 196, 224), width=ss)
+        xy = px(pts_mm)
+        if faded:
+            d.line(xy + xy[:1], fill=(214, 214, 214), width=2 * ss)
+        elif self.preview_style.get() == "filled":
+            d.polygon(xy, fill=(242, 196, 109))
+            d.line(xy + xy[:1], fill=(58, 42, 16), width=max(1, round(1.5 * ss)))
         else:
-            c.create_polygon(xy, fill="", outline="#111111", width=1.5, tags="pattern")
+            d.line(xy + xy[:1], fill=(17, 17, 17), width=max(1, round(1.5 * ss)))
+        if ss > 1:
+            img = img.resize((W, H), Image.LANCZOS)
+        self._photo = ImageTk.PhotoImage(img)
+        c.create_image(0, 0, image=self._photo, anchor="nw", tags="pattern")
 
     # ------------------------------------------------------------ line test
     def run_test(self):
@@ -706,12 +733,11 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"The line test could not run:\n{exc}")
             return
-        self._draw(self.result_mm, final=True)
+        self._draw(self.result_mm, final=True, faded=True)
         if self._view is None:
             self._show_report(checks, gp.seed)
             return
         c = self.canvas
-        c.itemconfigure("pattern", outline="#d6d6d6")
         cx, cy, s = self._view
         xy = np.column_stack([cx + P[:, 0] * s, cy - P[:, 1] * s])
         xy = np.vstack([xy, xy[:1]])  # the pen finishes back on the start point

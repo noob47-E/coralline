@@ -35,7 +35,7 @@ SVG, PDF, DXF or PNG in real millimetres.
 Requires **Python 3.9+**. Tested on Windows 10 with Python 3.12.
 
 ```bash
-git clone https://github.com/<noob47-E>/coralline.git
+git clone https://github.com/noob47-E/coralline.git
 cd coralline
 pip install -r requirements.txt
 python app.py
@@ -52,7 +52,7 @@ packages it needs (numpy, scipy, Pillow).
 ![The Coralline app](docs/images/app.png)
 
 1. Pick a **Preset** or set the sliders yourself.
-2. Press **Generate new pattern** and watch it grow. It usually takes 5–20 seconds.
+2. Press **Generate new pattern** and watch it grow. Roughly 5 s at 200 mm, 15 s at 350 mm and about a minute at 600 mm.
 3. Don't like it? Press Generate again. Like it? Note the **seed**: *Regenerate same seed* rebuilds exactly the same pattern.
 4. Adjust **Output smoothing** and **Line width**. These update the finished pattern instantly, without regrowing it.
 5. Press **Test: is it one continuous line?** if you want proof.
@@ -142,6 +142,12 @@ The pattern is a closed chain of points that "grows" inside a boundary. On every
 3. **Repulsion**: points from different parts of the line push apart when closer than one line spacing. A `scipy` k-d tree keeps this fast.
 4. **Walls**: the outer shape, centre hole and channels push points away.
 5. **Growth**: new points are inserted, preferring free space (low pressure) and curved tips (branchiness). Long edges are split and tiny ones merged.
+
+**Speed-ups for big patterns.** Most of a large pattern is finished and packed tight. Points that
+have stopped moving are put to *sleep*: they act as fixed obstacles, and only the growing parts are
+simulated. Every 10–20 steps a full step re-checks all points and wakes any that are being pushed.
+Late in a big run only about 10–15% of the points are awake. The preview is drawn with Pillow into
+an image, which stays fast at 40,000+ points.
 
 The line keeps getting longer but has limited room, so it buckles and folds into coral fingers.
 Repulsion keeps separate parts of the line apart, so it never crosses itself. The random seed
