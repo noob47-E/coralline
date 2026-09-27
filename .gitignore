@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller (build_exe.bat)
+build/
+dist/
+*.spec
+
+# Generated patterns
+output/
+patterns/
+
+# OS
+Thumbs.db
+.DS_Store

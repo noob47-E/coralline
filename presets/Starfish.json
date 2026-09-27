@@ -1,0 +1,7 @@
+{
+  "growth": {"diameter_mm": 200, "spacing_mm": 4.5, "boundary": "circle", "fill": 0.85, "growth_speed": 0.5,
+             "branchiness": 0.7, "smoothness": 0.75, "wiggle": 0.2, "start_shape": "star", "start_size": 0.3,
+             "star_arms": 5, "hole": 0.06, "channels": 5, "channel_width": 2.0, "channel_length": 1.0,
+             "channel_rotation_deg": 126},
+  "export": {"smoothing": 4}
+}

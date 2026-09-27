@@ -1,0 +1,6 @@
+{
+  "growth": {"diameter_mm": 200, "spacing_mm": 4.5, "boundary": "circle", "fill": 0.72, "growth_speed": 0.5,
+             "branchiness": 0.7, "smoothness": 0.7, "wiggle": 0.2, "start_shape": "ring", "hole": 0.18,
+             "channels": 0},
+  "export": {"smoothing": 4}
+}

@@ -1,0 +1,35 @@
+{
+  "growth": {
+    "diameter_mm": 200.0,
+    "spacing_mm": 4.5,
+    "boundary": "circle",
+    "aspect": 1.0,
+    "rotation_deg": 0.0,
+    "fill": 0.8,
+    "growth_speed": 0.5,
+    "branchiness": 0.6,
+    "smoothness": 0.8,
+    "wiggle": 0.15,
+    "max_iterations": 5000,
+    "start_shape": "circle",
+    "start_size": 0.12,
+    "star_arms": 5,
+    "hole": 0.12,
+    "channels": 4,
+    "channel_width": 2.5,
+    "channel_length": 1.0,
+    "channel_rotation_deg": 90.0,
+    "seed": 42
+  },
+  "export": {
+    "smoothing": 4,
+    "point_spacing_mm": 1.2,
+    "stroke_mm": 0.5,
+    "margin_mm": 5.0,
+    "png_dpi": 300,
+    "png_style": "line",
+    "line_color": "#000000",
+    "fill_color": "#f2c46d",
+    "background": "#ffffff"
+  }
+}
