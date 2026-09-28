@@ -1,0 +1,15 @@
+{
+  "growth": {
+    "style": "maze",
+    "diameter_mm": 200,
+    "spacing_mm": 4.5,
+    "boundary": "circle",
+    "maze_corridor": 0.8,
+    "maze_direction": "any",
+    "organic": 0.5,
+    "smoothness": 0.7
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

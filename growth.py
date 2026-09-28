@@ -29,17 +29,16 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from geometry import closed_length, count_self_intersections, resample_closed
+from shapes import SHAPES, WALL_CLEAR, Region
 
-BOUNDARIES = ["circle", "ellipse", "triangle", "square", "hexagon", "octagon"]
+BOUNDARIES = SHAPES
 START_SHAPES = ["ring", "circle", "star"]
-_SIDES = {"triangle": 3, "square": 4, "hexagon": 6, "octagon": 8}
 
 # Simulation constants (spacing units)
 REST = 0.42        # rest length of an edge
 MAX_EDGE = 0.7     # longer edges are split
 MIN_EDGE = 0.14    # shorter edges are collapsed
 MAX_STEP = 0.12    # max movement of a node per step
-WALL_CLEAR = 0.35  # hard minimum distance from any wall
 LINE_GAP = 0.92    # typical distance between neighbouring strands when packed
 
 # Sleeping (speed-up for big patterns, see DifferentialGrowth.step)
@@ -51,14 +50,23 @@ SLEEP_PRESSURE = 0.25   # only crowded nodes sleep (free space means it may stil
 SLEEP_K = 16            # max sleeping neighbours looked up per awake node
 
 
+STYLES = ["coral", "maze", "dendrite", "spiral", "scribble"]
+
+
 @dataclass
 class GrowthParams:
+    """All pattern settings (the name is historical: presets store them under "growth")."""
+    style: str = "coral"
     # size
     diameter_mm: float = 200.0
     spacing_mm: float = 4.5
     boundary: str = "circle"
     aspect: float = 1.0
     rotation_deg: float = 0.0
+    shape_points: int = 5         # star / flower
+    shape_depth: float = 0.5      # star / flower
+    shape_lumpiness: float = 0.5  # blob
+    shape_seed: int = 1           # blob outline
     # growth
     fill: float = 0.8
     growth_speed: float = 0.5
@@ -75,6 +83,21 @@ class GrowthParams:
     channel_width: float = 1.5
     channel_length: float = 1.0
     channel_rotation_deg: float = 90.0
+    # maze / dendrite / scribble: let the coral physics soften the finished curve
+    organic: float = 0.5
+    # maze
+    maze_corridor: float = 0.7       # 0 = short twisty corridors, 1 = long winding ones
+    maze_direction: str = "any"      # any | radial | circular
+    # dendrite
+    dendrite_branching: float = 0.5  # 0 = blobby, 1 = thin lightning branches
+    dendrite_roots: str = "centre"   # centre | edge
+    # spiral
+    spiral_mode: str = "twist"       # twist (a spiral) | rings (looks concentric)
+    spiral_roundness: float = 0.5    # inner rings: follow the shape (0) or turn round (1)
+    ring_wobble: float = 0.2
+    # scribble
+    scribble_density: str = "uniform"  # uniform | radial | clouds
+    scribble_gap: float = 1.8          # average gap between dots, in line spacings
     seed: int = 0
 
     @classmethod
@@ -92,20 +115,36 @@ class GrowthParams:
 
 
 class DifferentialGrowth:
-    def __init__(self, params: GrowthParams):
+    """The coral style. Also used by other styles to soften ("organic finish") a finished curve:
+    pass `initial_points` (spacing units), the style's `region` and `rng`, and `extra_length`
+    (0.1 = the line may grow 10% longer)."""
+
+    def __init__(self, params: GrowthParams, initial_points: np.ndarray | None = None,
+                 extra_length: float = 0.0, region: Region | None = None, rng=None,
+                 growable: np.ndarray | None = None):
         self.p = params
-        self.rng = np.random.default_rng(params.seed)
+        self.rng = rng if rng is not None else np.random.default_rng(params.seed)
         self.iteration = 0
         self.done = False
         self.stop_reason = ""
         self.Rb = max(4.0, 0.5 * params.diameter_mm / params.spacing_mm)
 
-        self._build_boundary()
-        self.hole_r = params.hole * self._rb_min if params.hole > 0 else 0.0
-        self._build_seed()
-        self._build_channels()
-        self.P = self._seed_pts
-        self._estimate_target()
+        if initial_points is None:
+            self.region = Region(params, self.Rb)
+            self.hole_r = self.region.hole_r
+            self._build_seed()
+            self.region.build_channels(self._channel_span)
+            self.P = self._seed_pts
+            self._estimate_target()
+        else:
+            self.region = region if region is not None else Region(params, self.Rb)
+            self.hole_r = self.region.hole_r
+            if growable is None:
+                self.P = resample_closed(np.asarray(initial_points, dtype=float), REST)
+            else:  # caller already spaced the points; growable[i] says if node i may grow
+                self.P = np.asarray(initial_points, dtype=float).copy()
+            self.full_length = self.region.area() / LINE_GAP
+            self.target_length = closed_length(self.P) * (1.0 + max(0.0, extra_length))
         self._length_history: list[float] = []
         self._length = closed_length(self.P)
 
@@ -120,6 +159,7 @@ class DifferentialGrowth:
         self._sleep_tree = None
         self._n_sleep = 0
         self._pos_of_id = None
+        self.growable = None if growable is None else np.asarray(growable, dtype=bool).copy()
 
         s = params.smoothness
         self.k_smooth = 0.04 + 0.36 * s
@@ -131,39 +171,6 @@ class DifferentialGrowth:
         self.grow_prob = 0.002 + 0.028 * params.growth_speed ** 1.5
 
     # ------------------------------------------------------------------ setup
-    def _polar_boundary_r(self, theta: np.ndarray) -> np.ndarray:
-        return np.interp(np.mod(theta, 2 * np.pi), self._b_theta, self._b_r, period=2 * np.pi)
-
-    def _build_boundary(self):
-        p = self.p
-        rot = math.radians(p.rotation_deg)
-        t = np.linspace(0, 2 * np.pi, 4096, endpoint=False)
-        if p.boundary in _SIDES:
-            n = _SIDES[p.boundary]
-            apothem = self.Rb * math.cos(math.pi / n)
-            r = apothem / np.cos(np.mod(t, 2 * np.pi / n) - math.pi / n)
-        else:
-            r = np.full_like(t, self.Rb)
-        pts = np.column_stack([r * np.cos(t), r * np.sin(t)])
-        aspect = p.aspect if p.boundary != "circle" else 1.0
-        pts[:, 1] *= aspect
-        c, s = math.cos(rot), math.sin(rot)
-        pts = pts @ np.array([[c, s], [-s, c]])
-        pts = resample_closed(pts, 0.1)
-        th = np.mod(np.arctan2(pts[:, 1], pts[:, 0]), 2 * np.pi)
-        rr = np.hypot(pts[:, 0], pts[:, 1])
-        order = np.argsort(th)
-        self._b_theta, self._b_r = th[order], rr[order]
-        self._b_pts = pts
-        self._b_tree = cKDTree(pts)
-        self._rb_min = float(rr.min())
-        # cos of the worst angle between the radial direction and the wall normal; lets
-        # _wall_forces skip nodes that are provably out of reach of the boundary
-        tan = np.roll(pts, -1, axis=0) - np.roll(pts, 1, axis=0)
-        normal = np.column_stack([tan[:, 1], -tan[:, 0]]) / np.maximum(np.hypot(tan[:, 0], tan[:, 1]), 1e-12)[:, None]
-        cos = np.abs((normal * pts).sum(axis=1)) / np.maximum(rr, 1e-12)
-        self._b_cos_min = max(0.1, float(cos.min()) - 1.5 / self._rb_min)
-
     def _random_wobble(self, theta: np.ndarray, amp: float) -> np.ndarray:
         w = np.zeros_like(theta)
         for k in range(2, 8):
@@ -174,7 +181,7 @@ class DifferentialGrowth:
         p = self.p
         base = max(1.6, self.hole_r + 1.6)
         if p.start_shape == "ring":
-            return self._polar_boundary_r(theta) - 1.3
+            return self.region.inset_r(theta, 1.3)
         if p.start_shape == "star":
             amp = max(2.0, p.start_size * self.Rb)
             k = max(2, int(p.star_arms))
@@ -192,45 +199,18 @@ class DifferentialGrowth:
         pts = np.column_stack([r * np.cos(t), r * np.sin(t)])
         self._seed_pts = resample_closed(pts, REST)
 
-    def _build_channels(self):
-        p = self.p
-        self.channels = []
-        if p.channels <= 0:
-            return
-        half = 0.5 * p.channel_width
-        rot = math.radians(p.channel_rotation_deg)
-        for k in range(int(p.channels)):
-            th = rot + 2 * math.pi * k / p.channels
-            rb = float(self._polar_boundary_r(np.array([th]))[0])
-            rs = float(self._seed_radius(np.array([th]))[0])
-            if p.start_shape == "ring":
-                r_in = self.hole_r
-                r_out = min(p.channel_length * rb, rs - half - 1.4)
-            else:
-                r_in = rs + 0.3 + half + 1.4
-                r_out = p.channel_length * rb + (half + 1.0 if p.channel_length >= 0.999 else 0.0)
-            if r_out > r_in + 0.5:
-                u = np.array([math.cos(th), math.sin(th)])
-                self.channels.append((u, r_in, r_out, half))
-
-    def _allowed_mask(self, pts: np.ndarray) -> np.ndarray:
-        th = np.arctan2(pts[:, 1], pts[:, 0])
-        r = np.hypot(pts[:, 0], pts[:, 1])
-        ok = r < self._polar_boundary_r(th)
-        if self.hole_r > 0:
-            ok &= r > self.hole_r
-        for u, r_in, r_out, half in self.channels:
-            t = np.clip(pts @ u, r_in, r_out)
-            ok &= np.hypot(pts[:, 0] - t * u[0], pts[:, 1] - t * u[1]) > half
-        return ok
+    def _channel_span(self, th, rb, half):
+        """Coral channels start just outside the start shape (or end just inside the ring)."""
+        rs = float(self._seed_radius(np.array([th]))[0])
+        if self.p.start_shape == "ring":
+            return self.hole_r, min(self.p.channel_length * rb, rs - half - 1.4)
+        r_in = rs + 0.3 + half + 1.4
+        r_out = self.p.channel_length * rb + (half + 1.0 if self.p.channel_length >= 0.999 else 0.0)
+        return r_in, r_out
 
     def _estimate_target(self):
         h = 0.5
-        R = float(self._b_r.max())
-        g = np.arange(-R, R + h, h)
-        X, Y = np.meshgrid(g, g)
-        pts = np.column_stack([X.ravel(), Y.ravel()])
-        area = self._allowed_mask(pts).sum() * h * h
+        area = self.region.area(h)
         self.full_length = area / LINE_GAP
         self.target_length = max(closed_length(self.P) * 1.05, self.p.fill * self.full_length)
 
@@ -267,7 +247,7 @@ class DifferentialGrowth:
         if full:
             sleeping = self.asleep.copy()
             disp[sleeping] = np.where(det_move[sleeping, None] > WAKE_MOVE, disp[sleeping], 0.0)
-        P[act] = self._clamp_walls(P[act] + disp)
+        P[act] = self.region.clamp(P[act] + disp)
 
         if full:
             self._update_sleep(P, det_move, pressure)
@@ -338,69 +318,8 @@ class DifferentialGrowth:
                 pressure += np.bincount(rows, mag, na)
 
         # 4. walls
-        pressure += self._wall_forces(p, F)
+        pressure += self.region.wall_forces(p, F, self.k_wall)
         return F, pressure
-
-    def _wall_forces(self, P: np.ndarray, F: np.ndarray) -> np.ndarray:
-        pressure = np.zeros(len(P))
-        r = np.maximum(np.hypot(P[:, 0], P[:, 1]), 1e-9)
-        # outer boundary: only nodes that can be within reach of it
-        cand = np.flatnonzero(r > self._rb_min - 1.05 / self._b_cos_min)
-        if len(cand):
-            gap = self._polar_boundary_r(np.arctan2(P[cand, 1], P[cand, 0])) - r[cand]
-            cand = cand[gap * self._b_cos_min < 1.05]
-        if len(cand):
-            d, idx = self._b_tree.query(P[cand], distance_upper_bound=1.0)
-            near = np.isfinite(d)
-            if near.any():
-                ci = cand[near]
-                v = P[ci] - self._b_pts[idx[near]]
-                dn = np.maximum(d[near], 1e-6)
-                mag = 1.0 - dn
-                F[ci] += (self.k_wall * mag / dn)[:, None] * v
-                pressure[ci] += mag
-        # centre hole
-        if self.hole_r > 0:
-            dw = r - self.hole_r
-            m = dw < 1.0
-            if m.any():
-                mag = 1.0 - np.maximum(dw[m], 0.0)
-                F[m] += (self.k_wall * mag / r[m])[:, None] * P[m]
-                pressure[m] += mag
-        # channels
-        for u, r_in, r_out, half in self.channels:
-            t = np.clip(P @ u, r_in, r_out)
-            v = P - t[:, None] * u
-            dist = np.maximum(np.hypot(v[:, 0], v[:, 1]), 1e-9)
-            dw = dist - half
-            m = dw < 1.0
-            if m.any():
-                mag = 1.0 - np.maximum(dw[m], 0.0)
-                F[m] += (self.k_wall * mag / dist[m])[:, None] * v[m]
-                pressure[m] += mag
-        return pressure
-
-    def _clamp_walls(self, P: np.ndarray) -> np.ndarray:
-        r = np.maximum(np.hypot(P[:, 0], P[:, 1]), 1e-9)
-        rmax = np.full(len(P), np.inf)
-        outer = np.flatnonzero(r > self._rb_min - WALL_CLEAR)  # the only ones that can be outside
-        if len(outer):
-            rmax[outer] = self._polar_boundary_r(np.arctan2(P[outer, 1], P[outer, 0])) - WALL_CLEAR
-        rmin = self.hole_r + WALL_CLEAR if self.hole_r > 0 else 0.0
-        r_new = np.clip(r, rmin, rmax)
-        P = P * (r_new / r)[:, None]
-        for u, r_in, r_out, half in self.channels:
-            t = np.clip(P @ u, r_in, r_out)
-            v = P - t[:, None] * u
-            dist = np.hypot(v[:, 0], v[:, 1])
-            m = dist < half + WALL_CLEAR
-            if m.any():
-                perp = np.array([-u[1], u[0]])
-                side = np.sign(v[m] @ perp)
-                side[side == 0] = 1.0
-                dirs = np.where(dist[m, None] > 1e-6, v[m] / np.maximum(dist[m, None], 1e-6), side[:, None] * perp)
-                P[m] = t[m, None] * u + dirs * (half + WALL_CLEAR)
-        return P
 
     # -------------------------------------------------------------- sleeping
     def _update_sleep(self, P: np.ndarray, det_move: np.ndarray, pressure: np.ndarray):
@@ -459,6 +378,8 @@ class DifferentialGrowth:
         b = self.p.branchiness
         curv = np.clip(self._curvature(P, ends) / 0.35, 0.0, 1.0)
         w = np.exp(-press[ends] / 0.35) * ((1.0 - b) + b * curv)
+        if self.growable is not None:
+            w = w * self.growable[ends]
         w_edge = 0.5 * (w[:len(first)] + w[len(first):])
         L = np.hypot(*(P[(first + 1) % N] - P[first]).T)
         hit = (self.rng.random(len(first)) < w_edge) & (L > 2.2 * MIN_EDGE)
@@ -481,6 +402,8 @@ class DifferentialGrowth:
         self.asleep = self.asleep[keep]
         self._anchor = self._anchor[keep]
         self._young = self._young[keep]
+        if self.growable is not None:
+            self.growable = self.growable[keep]
 
     def _split_long(self) -> np.ndarray:
         L = self._edge_lengths()
@@ -504,6 +427,9 @@ class DifferentialGrowth:
         self.asleep = np.insert(self.asleep, at, False)
         self._anchor = np.insert(self._anchor, at, mids, axis=0)
         self._young = np.insert(self._young, at, True)
+        if self.growable is not None:
+            g = self.growable
+            self.growable = np.insert(g, at, g[idx] & g[(idx + 1) % len(g)])
         # the neighbours of a new node must be free to make room for it
         self.asleep[at - 1 + np.arange(len(at))] = False
         self.asleep[(at + 1 + np.arange(len(at))) % len(self.P)] = False
@@ -555,7 +481,7 @@ class DifferentialGrowth:
         return self.P * self.p.spacing_mm
 
     def boundary_mm(self) -> np.ndarray:
-        return self._b_pts * self.p.spacing_mm
+        return self.region.b_pts * self.p.spacing_mm
 
     def self_intersections(self) -> int:
         return count_self_intersections(self.P)

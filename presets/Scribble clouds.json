@@ -1,0 +1,16 @@
+{
+  "growth": {
+    "style": "scribble",
+    "diameter_mm": 220,
+    "spacing_mm": 4.5,
+    "boundary": "blob",
+    "shape_lumpiness": 0.6,
+    "shape_seed": 21,
+    "scribble_density": "clouds",
+    "scribble_gap": 1.4,
+    "organic": 0.2
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

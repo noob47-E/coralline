@@ -23,12 +23,13 @@ import random
 import time
 
 from exporters import FORMATS, ExportSettings, export
-from growth import DifferentialGrowth, GrowthParams
+from generators import make_generator
+from growth import GrowthParams
 from linetest import run_line_test
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate coral / differential-growth line patterns.")
+    ap = argparse.ArgumentParser(description="Generate one-line patterns (coral, maze, dendrite, spiral, scribble).")
     ap.add_argument("--preset", help="preset JSON file (from the app's Save preset)")
     ap.add_argument("--seed", type=int, help="random seed (default: random); with --count, seeds count up from it")
     ap.add_argument("--count", type=int, default=1, help="number of patterns to make")
@@ -65,11 +66,11 @@ def main():
         gp = GrowthParams.from_dict(growth)
         gp.seed = first_seed + n
         t0 = time.time()
-        sim = DifferentialGrowth(gp).run()
+        sim = make_generator(gp).run()
         P = sim.points_mm()
         _, checks = run_line_test(P, es, gp.spacing_mm)
         failed = [c.title for c in checks if not c.passed]
-        name = f"coral_seed{gp.seed}"
+        name = f"{gp.style}_seed{gp.seed}"
         for f in formats:
             export(P, os.path.join(args.out, f"{name}.{f}"), f, es)
         with open(os.path.join(args.out, f"{name}_settings.json"), "w", encoding="utf-8") as fh:

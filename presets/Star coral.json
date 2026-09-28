@@ -1,0 +1,19 @@
+{
+  "growth": {
+    "style": "coral",
+    "diameter_mm": 220,
+    "spacing_mm": 4.5,
+    "boundary": "star",
+    "shape_points": 5,
+    "shape_depth": 0.6,
+    "fill": 0.8,
+    "branchiness": 0.6,
+    "smoothness": 0.75,
+    "wiggle": 0.2,
+    "start_shape": "circle",
+    "hole": 0.08
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

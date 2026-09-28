@@ -1,0 +1,15 @@
+{
+  "growth": {
+    "style": "spiral",
+    "diameter_mm": 200,
+    "spacing_mm": 4.5,
+    "boundary": "circle",
+    "spiral_mode": "rings",
+    "spiral_roundness": 0.3,
+    "ring_wobble": 0.3,
+    "fill": 0.8
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

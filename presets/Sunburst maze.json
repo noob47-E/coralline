@@ -1,0 +1,17 @@
+{
+  "growth": {
+    "style": "maze",
+    "diameter_mm": 220,
+    "spacing_mm": 4.0,
+    "boundary": "flower",
+    "shape_points": 8,
+    "shape_depth": 0.4,
+    "maze_corridor": 0.9,
+    "maze_direction": "radial",
+    "organic": 0.4,
+    "hole": 0.12
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "growth": {
+    "style": "dendrite",
+    "diameter_mm": 220,
+    "spacing_mm": 3.5,
+    "boundary": "hexagon",
+    "dendrite_branching": 0.8,
+    "dendrite_roots": "edge",
+    "fill": 0.5,
+    "organic": 0.6
+  },
+  "export": {
+    "smoothing": 4
+  }
+}

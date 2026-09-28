@@ -28,8 +28,10 @@ from PIL import Image, ImageDraw, ImageTk
 
 from exporters import FORMATS, ExportSettings, export, smooth_points
 from geometry import closed_length, count_self_intersections
-from growth import BOUNDARIES, START_SHAPES, DifferentialGrowth, GrowthParams
+from generators import make_generator
+from growth import BOUNDARIES, START_SHAPES, STYLES, GrowthParams
 from linetest import run_line_test
+from surprise import describe, randomize
 
 APP_TITLE = "Coral Pattern Generator"
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -37,10 +39,27 @@ PRESET_DIR = os.path.join(BASE_DIR, "presets")
 
 # (key, label, kind, options) - kind "scale": (min, max, step); kind "combo": list of values
 GROWTH_CONTROLS = [
+    ("Pattern type", [
+        ("style", "Pattern type", "combo", STYLES),
+        ("maze_corridor", "Corridor length", "scale", (0.0, 1.0, 0.05)),
+        ("maze_direction", "Corridor direction", "combo", ["any", "radial", "circular"]),
+        ("dendrite_branching", "Branch thinness", "scale", (0.0, 1.0, 0.05)),
+        ("dendrite_roots", "Grow from", "combo", ["centre", "edge"]),
+        ("spiral_mode", "Spiral look", "combo", ["twist", "rings"]),
+        ("spiral_roundness", "Roundness", "scale", (0.0, 1.0, 0.05)),
+        ("ring_wobble", "Ring wobble", "scale", (0.0, 1.0, 0.05)),
+        ("scribble_density", "Dot density", "combo", ["uniform", "radial", "clouds"]),
+        ("scribble_gap", "Dot gap (x spacing)", "scale", (1.3, 3.0, 0.05)),
+        ("organic", "Organic finish", "scale", (0.0, 1.0, 0.05)),
+    ]),
     ("Size & shape", [
         ("diameter_mm", "Pattern width (mm)", "scale", (40, 600, 5)),
         ("spacing_mm", "Line spacing (mm)", "scale", (1.0, 20.0, 0.1)),
         ("boundary", "Outer shape", "combo", BOUNDARIES),
+        ("shape_points", "Points / petals", "scale", (3, 12, 1)),
+        ("shape_depth", "Point depth", "scale", (0.0, 1.0, 0.05)),
+        ("shape_lumpiness", "Lumpiness", "scale", (0.0, 1.0, 0.05)),
+        ("shape_seed", "Blob number", "scale", (1, 9999, 1)),
         ("aspect", "Height / width", "scale", (0.4, 2.0, 0.05)),
         ("rotation_deg", "Shape rotation (deg)", "scale", (0, 180, 1)),
     ]),
@@ -74,6 +93,38 @@ EXPORT_CONTROLS = [
     ]),
 ]
 
+# Rows that only apply to some pattern types / shapes: shown only then.
+# Each rule gets (pattern type, outer shape, coral start shape).
+_GRID = ("maze", "dendrite", "scribble")
+VISIBLE = {
+    "maze_corridor": lambda s, b, st: s == "maze",
+    "maze_direction": lambda s, b, st: s == "maze",
+    "dendrite_branching": lambda s, b, st: s == "dendrite",
+    "dendrite_roots": lambda s, b, st: s == "dendrite",
+    "spiral_mode": lambda s, b, st: s == "spiral",
+    "spiral_roundness": lambda s, b, st: s == "spiral",
+    "ring_wobble": lambda s, b, st: s == "spiral",
+    "scribble_density": lambda s, b, st: s == "scribble",
+    "scribble_gap": lambda s, b, st: s == "scribble",
+    "organic": lambda s, b, st: s in _GRID,
+    "shape_points": lambda s, b, st: b in ("star", "flower"),
+    "shape_depth": lambda s, b, st: b in ("star", "flower"),
+    "shape_lumpiness": lambda s, b, st: b == "blob",
+    "shape_seed": lambda s, b, st: b == "blob",
+    "aspect": lambda s, b, st: b != "circle",
+    "rotation_deg": lambda s, b, st: b != "circle",
+    "fill": lambda s, b, st: s in ("coral", "dendrite", "spiral"),
+    "growth_speed": lambda s, b, st: s == "coral",
+    "branchiness": lambda s, b, st: s == "coral",
+    "start_shape": lambda s, b, st: s == "coral",
+    "start_size": lambda s, b, st: s == "coral" and st != "ring",
+    "star_arms": lambda s, b, st: s == "coral" and st == "star",
+    "channels": lambda s, b, st: s != "spiral",
+    "channel_width": lambda s, b, st: s != "spiral",
+    "channel_length": lambda s, b, st: s != "spiral",
+    "channel_rotation_deg": lambda s, b, st: s != "spiral",
+}
+
 TOOLTIP_DELAY_MS = 2000  # hover this long before the explanation appears
 TRACE_SECONDS = 8.0      # how long the line test takes to trace the whole line
 TEST_LABEL = "Test: is it one continuous line?"
@@ -91,6 +142,58 @@ def _tip(what: str, high: str | None = None, low: str | None = None, note: str |
 
 
 TIPS = {
+    # --- pattern type
+    "style": _tip(
+        "The kind of pattern. Every type is still ONE continuous closed line.\n"
+        "- coral: organic coral / brain-coral fingers that grow and fold\n"
+        "- maze: a labyrinth of winding corridors filling the shape\n"
+        "- dendrite: branching lightning / fern-like branches\n"
+        "- spiral: a double spiral of rings following the shape\n"
+        "- scribble: one loop wandering through thousands of dots\n"
+        "Only the settings that apply to the chosen type are shown."),
+    "maze_corridor": _tip(
+        "How long the maze corridors run before they branch.",
+        "Long, winding corridors that snake through the whole shape.",
+        "Short, twisty corridors with many small dead ends."),
+    "maze_direction": _tip(
+        "Which way the corridors prefer to run.\n"
+        "- any: no preference\n"
+        "- radial: out from the centre, like a sunburst\n"
+        "- circular: around the centre, like rings"),
+    "dendrite_branching": _tip(
+        "How thin and lightning-like the branches are. The branches grow toward open space, and "
+        "this sets how strongly the tips that stick out win.",
+        "Thin, lightning-like branches with big gaps between them.",
+        "Blobby, bushy growth that fills more evenly."),
+    "dendrite_roots": _tip(
+        "Where the branches start.\n"
+        "- centre: grow outward from the middle\n"
+        "- edge: grow inward from the outer edge, leaving an open centre (nice for the glow)"),
+    "spiral_mode": _tip(
+        "The look of the spiral.\n"
+        "- twist: one smooth spiral winding in and back out\n"
+        "- rings: looks like concentric rings, with a short hop between them"),
+    "spiral_roundness": _tip(
+        "Whether the inner rings keep the outer shape or turn into circles.",
+        "Inner rings become round quickly.",
+        "Every ring follows the outer shape (a star stays a star)."),
+    "ring_wobble": _tip(
+        "Random waviness in the rings, like tree rings or a topographic map.",
+        "Wavier, more natural rings with uneven gaps.",
+        "Smooth, evenly spaced rings. 0 = perfectly even."),
+    "scribble_density": _tip(
+        "How the dots the line passes through are spread.\n"
+        "- uniform: evenly everywhere\n"
+        "- radial: denser in the middle, sparser toward the edge\n"
+        "- clouds: denser and sparser in soft patches"),
+    "scribble_gap": _tip(
+        "The average distance between the dots, in line spacings.",
+        "Fewer dots: a looser, calmer scribble with bigger gaps.",
+        "More dots: a denser, busier scribble (takes a little longer)."),
+    "organic": _tip(
+        "Lets the coral physics soften the finished pattern, so it looks grown instead of drawn.",
+        "Rounder, more natural curves; the line may also grow a little into free space.",
+        "Crisper, more geometric lines. 0 = exactly as constructed."),
     # --- size & shape
     "diameter_mm": _tip(
         "The overall width of the pattern in millimetres (the size of the outer shape).",
@@ -108,7 +211,27 @@ TIPS = {
         "The outer shape the pattern grows inside.\n"
         "- circle: round (ignores Height / width)\n"
         "- ellipse: oval, use Height / width to stretch it\n"
-        "- triangle / square / hexagon / octagon: straight-sided shapes"),
+        "- triangle / square / pentagon / hexagon / octagon: straight-sided shapes\n"
+        "- rounded square: a square with soft corners\n"
+        "- star, flower: set the number of points / petals and their depth\n"
+        "- heart, teardrop\n"
+        "- blob: a random organic outline; change Blob number for a different one"),
+    "shape_points": _tip(
+        "The number of points of the star, or petals of the flower.",
+        "More, narrower points / petals.",
+        "Fewer, bigger points / petals."),
+    "shape_depth": _tip(
+        "How deep the gaps between the points / petals go.",
+        "Spikier star, deeper petals. Very deep settings are toned down automatically if the "
+        "pattern couldn't fit into them.",
+        "Closer to a plain circle."),
+    "shape_lumpiness": _tip(
+        "How irregular the blob outline is.",
+        "Wilder, lumpier blob.",
+        "Almost a circle."),
+    "shape_seed": _tip(
+        "Which random blob to use. Every number gives a different outline; the same number always "
+        "gives the same one (\"Keep shape\" in Surprise me locks it)."),
     "aspect": _tip(
         "Stretches the outer shape. 1.00 = not stretched. Has no effect when Outer shape is 'circle' "
         "(pick 'ellipse' for an oval).",
@@ -120,7 +243,9 @@ TIPS = {
         "Turns it back. Example: a hexagon at 0 has a pointed top, at 30 it has a flat top."),
     # --- growth
     "fill": _tip(
-        "How much of the shape gets filled with line before growing stops (1.00 = packed full).",
+        "How much of the shape gets filled with line before growing stops (1.00 = packed full). "
+        "Dendrite: how many grid cells the branches may take. Spiral: how much of the middle the "
+        "rings can't reach gets filled with coral.",
         "Denser pattern that reaches all the way to the edges. Longer total line.",
         "Stops earlier and leaves open space: around the outside with a circle start, "
         "or in the middle with a ring start."),
@@ -233,6 +358,12 @@ BUTTON_TIPS = {
               "- PNG: a picture\n"
               "- All: all four files plus the settings, into one folder",
     "preview_style": "Preview only: 'line' shows the line, 'filled' colours in the inside of the line.",
+    "surprise": "Picks a random pattern type, shape and settings and grows it. Size, line spacing "
+                "and export settings are never changed. Tick the boxes to keep what you like.",
+    "keep_shape": "When ticked, Surprise me keeps the current outer shape (and its points, depth "
+                  "or blob) and only changes the pattern.",
+    "keep_style": "When ticked, Surprise me keeps the current pattern type and only changes its "
+                  "settings and the shape.",
     "show_boundary": "Shows the outer shape as a dotted line in the preview. It is not exported.",
     "test": "Proves the pattern is ONE continuous line.\n\n"
             "1. A pen traces the whole line, starting at the green START dot, without ever lifting, "
@@ -317,6 +448,10 @@ class App(tk.Tk):
         self.steps: dict[str, float] = {}
         self.seed_var = tk.StringVar(value="1")
         self.lock_seed = tk.BooleanVar(value=False)
+        self.keep_shape = tk.BooleanVar(value=False)
+        self.keep_style = tk.BooleanVar(value=False)
+        self.rows: dict[str, list] = {}   # widgets of each settings row (for show / hide)
+        self.run_label = ""
         self.show_boundary = tk.BooleanVar(value=True)
         self.preview_style = tk.StringVar(value="line")
         self.status = tk.StringVar(value="Press 'Generate new pattern' to start.   Tip: rest the mouse on "
@@ -370,6 +505,17 @@ class App(tk.Tk):
         b = ttk.Button(row, text="Stop", command=self.stop)
         b.pack(side="left", padx=(6, 0))
         tip(b, BUTTON_TIPS["stop"])
+        row = ttk.Frame(left)
+        row.pack(fill="x", pady=(6, 0))
+        b = ttk.Button(row, text="Surprise me", command=self.surprise)
+        b.pack(side="left")
+        tip(b, BUTTON_TIPS["surprise"])
+        cb = ttk.Checkbutton(row, text="Keep shape", variable=self.keep_shape)
+        cb.pack(side="left", padx=(8, 0))
+        tip(cb, BUTTON_TIPS["keep_shape"], "Keep shape")
+        cb = ttk.Checkbutton(row, text="Keep pattern type", variable=self.keep_style)
+        cb.pack(side="left", padx=(8, 0))
+        tip(cb, BUTTON_TIPS["keep_style"], "Keep pattern type")
         row = ttk.Frame(left)
         row.pack(fill="x", pady=(6, 0))
         lab = ttk.Label(row, text="Seed")
@@ -504,8 +650,24 @@ class App(tk.Tk):
 
                 var.trace_add("write", sync)
             self.vars[key] = var
+            self.rows[key] = row_widgets
             if key in TIPS:
                 self._add_tip(row_widgets, TIPS[key], label)
+            if key in ("style", "boundary", "start_shape"):
+                var.trace_add("write", lambda *a: self.after_idle(self._refresh_visibility))
+
+    def _refresh_visibility(self):
+        """Show only the settings that apply to the chosen pattern type and shape."""
+        s = self.vars["style"].get()
+        b = self.vars["boundary"].get()
+        st = self.vars["start_shape"].get()
+        for key, rule in VISIBLE.items():
+            show = rule(s, b, st)
+            for w in self.rows.get(key, []):
+                if show:
+                    w.grid()
+                else:
+                    w.grid_remove()
 
     def _add_tip(self, widgets, text, title=None):
         self.tooltips.append(Tooltip(widgets, text, title))
@@ -592,9 +754,19 @@ class App(tk.Tk):
     def generate_new(self):
         if not self.lock_seed.get():
             self.seed_var.set(str(random.randint(1, 999_999)))
+        self.run_label = ""
         self._start()
 
     def regenerate(self):
+        self.run_label = ""
+        self._start()
+
+    def surprise(self):
+        """Random pattern type, shape and settings (keeps size, spacing and export settings)."""
+        new = randomize(self.growth_params(), np.random.default_rng(), self.keep_shape.get(),
+                        self.keep_style.get())
+        self._load_values(new, self.export_settings())
+        self.run_label = "Surprise: " + describe(new)
         self._start()
 
     def stop(self):
@@ -607,7 +779,7 @@ class App(tk.Tk):
             self.thread.join(timeout=3)
         gp = self.growth_params()
         try:
-            sim = DifferentialGrowth(gp)
+            sim = make_generator(gp)
         except Exception as exc:  # bad combination of settings
             messagebox.showerror(APP_TITLE, f"Could not start with these settings:\n{exc}")
             return
@@ -616,14 +788,14 @@ class App(tk.Tk):
         self.sim = sim
         self.result_mm = None
         self.boundary_mm = sim.boundary_mm()
-        self.status.set(f"Growing... seed {gp.seed}")
+        self.status.set(f"{self.run_label or gp.style}: growing... seed {gp.seed}")
         self.thread = threading.Thread(target=self._worker, args=(sim, self.run_id, self.stop_event), daemon=True)
         self.thread.start()
 
-    def _worker(self, sim: DifferentialGrowth, run_id: int, stop_event: threading.Event):
+    def _worker(self, sim, run_id: int, stop_event: threading.Event):
         last = [0.0]
 
-        def publish(s: DifferentialGrowth):
+        def publish(s):
             now = time.perf_counter()
             if not s.done and now - last[0] < 0.08:  # the preview can't use more than ~12 updates/s
                 return
@@ -652,7 +824,8 @@ class App(tk.Tk):
             if st["done"]:
                 self._finish(pts, st)
             else:
-                self.status.set(f"Growing... seed {self.seed_var.get()}  |  step {st['iteration']:,}  |  "
+                label = self.run_label or (self.sim.p.style if self.sim is not None else "")
+                self.status.set(f"{label}: growing... seed {self.seed_var.get()}  |  step {st['iteration']:,}  |  "
                                 f"{st['nodes']:,} points  |  {st['progress'] * 100:.0f}%  |  "
                                 f"{st['elapsed']:.0f} s")
                 t = time.perf_counter()
@@ -662,6 +835,11 @@ class App(tk.Tk):
         self.after(self._poll_delay, self._poll)
 
     def _finish(self, pts, st):
+        if len(pts) < 3:  # the pattern could not be made at all
+            self.result_mm = None
+            self.status.set(f"Could not make this pattern: {st['reason']}")
+            messagebox.showerror(APP_TITLE, "Could not make this pattern:\n" + st["reason"])
+            return
         self.result_mm = pts
         crossings = count_self_intersections(pts)
         length_m = closed_length(smooth_points(pts, self.export_settings())) / 1000
@@ -868,7 +1046,8 @@ class App(tk.Tk):
             self._finish(snap[1], snap[2])
 
     def _default_name(self):
-        return f"coral_seed{self.seed_var.get()}"
+        style = self.sim.p.style if self.sim is not None else self.vars["style"].get()
+        return f"{style}_seed{self.seed_var.get()}"
 
     def export_one(self, fmt: str):
         if not self._need_result():
